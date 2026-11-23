@@ -129,6 +129,36 @@ class BaseModuleService:
                         continue
         return records
 
+    def _replace_jsonl(self, filepath: Path, records: list[dict[str, Any]]) -> int:
+        """整体替换 JSONL 文件：本批结果不会和上一批的历史记录混在一起。"""
+        _ensure_dir(filepath.parent)
+        tmp = filepath.with_name(f"{filepath.name}.tmp-{os.getpid()}")
+        written = 0
+        with open(tmp, "w", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+                written += 1
+        os.replace(tmp, filepath)
+        return written
+
+    def _write_json_file(self, filepath: Path, payload: dict[str, Any]) -> Path:
+        """原子写入单个 JSON 文件（当前报告/批次清单使用）。"""
+        _ensure_dir(filepath.parent)
+        tmp = filepath.with_name(f"{filepath.name}.tmp-{os.getpid()}")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, filepath)
+        return filepath
+
+    def _read_json_file(self, filepath: Path) -> dict[str, Any] | None:
+        if not filepath.exists():
+            return None
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
+
     def _write_checkpoint(self, name: str, state: dict[str, Any]) -> Path:
         p = self._data_dir("checkpoints")
         cp_file = p / f"{name}.json"

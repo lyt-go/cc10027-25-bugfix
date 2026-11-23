@@ -159,14 +159,25 @@ class CrossModulePipeline:
         started_at = time.time()
         results = {"pipeline": "quality_alert", "stages": {}}
 
-        # 阶段1: 质量诊断
+        # 阶段1: 质量诊断（只针对当前批次）
         quality_r = self.log_quality.diagnose_source(source_key)
         results["stages"]["diagnose"] = quality_r
+
+        # 未完成/缺产物：给出重试依据，不用历史错误或 0% 成功率去触发告警
+        if not quality_r.get("completed"):
+            results["stages"]["alert"] = {
+                "skipped": True,
+                "reason": quality_r.get("verdict"),
+                "retry": quality_r.get("retry"),
+            }
+            results["duration"] = round(time.time() - started_at, 2)
+            return results
 
         # 阶段2: 告警评估
         alert_r = self.alert_rule.evaluate_rules(source_key, {
             "parse_success_rate": quality_r.get("parse_success_rate", 100),
             "field_completeness": quality_r.get("field_completeness", {}).get("overall", 100),
+            "parse_errors": quality_r.get("parse_errors", 0),
             "source_key": source_key,
         })
         results["stages"]["alert"] = alert_r

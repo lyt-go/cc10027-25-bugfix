@@ -77,5 +77,41 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 空批次质量诊断
+
+日志解析按批次落盘，一次 `parse_log_file` 生成一个批次目录
+`data/logs/batches/<源编号>/<批次号>/`，包含本批 `parsed.jsonl`、
+`parse_errors.jsonl`、`manifest.json`，并更新该源的当前批次指针。
+质量诊断只读取当前批次，不会把上一批的解析错误算进这一批的空批次。
+
+诊断结论分四种，完成状态与待核状态不混用：
+
+| 判定 | 条件 | 完成 | 成功率 |
+| --- | --- | --- | --- |
+| 解析完成 | 当前批次已完成且无错误 | 是 | 按本批输入计算 |
+| 存在解析错误 | 当前批次已完成且有错误行 | 是 | 按本批输入计算 |
+| 确认零行 | 当前批次已完成且输入 0 行 | 是 | 100 |
+| 待核 | 当前批次进行中/已中断/已失败 | 否 | 空（不出具完成口径） |
+| 缺产物 | 当前批次指针或本批产物缺失 | 否 | 空（不出具完成口径） |
+
+- 历史批次的错误原行仍可通过批次接口查询，并在当前报告的 `history`
+  中标注“不计入当前批次”，供值班员追溯旧异常。
+- 待核/缺产物时报告给出 `retry`（输入文件、采集位点、批次号），
+  并且质量告警管道会跳过告警评估，不会用历史证据或 0% 成功率补出一个完成结论。
+- 当前报告固定写到 `data/exports/quality_current_<源编号>.json`，
+  每次诊断覆盖发布；`data/exports/quality_reports.jsonl` 保留诊断留档。
+
+相关接口：
+
+```text
+GET  /api/log_quality/report/{source_key}              # 读取已发布的当前报告（含 stale 标记）
+POST /api/log_quality/diagnose/{source_key}            # 按当前批次重新诊断并发布
+GET  /api/log_parser/batches/{source_key}              # 批次台账
+GET  /api/log_parser/batches/{source_key}/{batch_id}   # 历史批次证据（含错误原行）
+POST /api/log_parser/interrupt/{source_key}            # 模拟解析断开，验证待核判定
+```
+
+回归测试：`backend/test_empty_batch_quality.py`。
+
 领域：数据工程
 子方向：数据采集、爬虫与RPA

@@ -74,6 +74,66 @@ def export_entries(
     )
 
 
+@router.get("/log_quality/report/{source_key}", response_model=dict)
+def get_current_quality_report(source_key: str) -> dict[str, Any]:
+    """读取该源最近一次发布的当前质量报告（不重新诊断）。
+
+    报告里的判定只会覆盖当前批次；历史批次错误在 history 中单独列出。
+    """
+    service = require_service("log_quality")
+    report = service.get_current_report(source_key)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"日志源 {source_key} 尚无已发布的质量报告")
+    parser = require_service("log_parser")
+    current = parser.get_current_batch(source_key) or {}
+    report["stale"] = report.get("batch_id") != current.get("batch_id")
+    report["stale_note"] = (
+        "报告批次已不是当前批次，应重新诊断后再据此判定"
+        if report["stale"] else "报告对应当前解析批次"
+    )
+    return report
+
+
+@router.post("/log_quality/diagnose/{source_key}")
+def rerun_quality_diagnosis(source_key: str) -> dict[str, Any]:
+    """按当前批次重新诊断并发布当前报告。"""
+    service = require_service("log_quality")
+    return service.diagnose_source(source_key)
+
+
+@router.get("/log_parser/batches/{source_key}")
+def list_parse_batches(source_key: str) -> dict[str, Any]:
+    """列出该源的全部解析批次（含历史批次，供追溯旧异常）。"""
+    parser = require_service("log_parser")
+    current = parser.get_current_batch(source_key) or {}
+    batches = parser.list_batches(source_key)
+    return {
+        "source_key": source_key,
+        "current_batch_id": current.get("batch_id"),
+        "batches": batches,
+    }
+
+
+@router.get("/log_parser/batches/{source_key}/{batch_id}")
+def get_parse_batch(source_key: str, batch_id: str) -> dict[str, Any]:
+    """按批次号读取历史解析证据，包含错误原行。"""
+    parser = require_service("log_parser")
+    batch = parser.get_batch(source_key, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail=f"批次 {batch_id} 不存在")
+    return batch
+
+
+@router.post("/log_parser/interrupt/{source_key}")
+def interrupt_parse(source_key: str, reason: str = Query(default="解析进程断开")) -> dict[str, Any]:
+    """模拟解析过程断开：登记一个未完成批次，供质量诊断判为“待核”。"""
+    parser = require_service("log_parser")
+    batch = parser.begin_batch(source_key)
+    interrupted = parser.mark_batch_interrupted(source_key, batch["batch_id"], reason)
+    quality = require_service("log_quality").diagnose_source(source_key)
+    return {"batch": interrupted, "quality": quality}
+
+
 @router.get("/{module}/{entry_id}", response_model=dict)
 def get_entry(module: str, entry_id: int) -> dict[str, Any]:
     service = require_service(module)
